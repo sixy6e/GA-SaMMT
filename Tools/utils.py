@@ -1,10 +1,15 @@
+from pathlib import Path
 from typing import Any
 import numpy
+import pandas
 from pandas.core.common import flatten
 
 import arcpy
 
 PY_VERSION: str = "PYTHON_9.3"  # is this really required by arc???
+
+# TODO; relook at the list[tuple[list[Any], list[Any]]] vars, as they're probably
+#       list[tuple[Any, Any]] instead
 
 
 def area_unit_converter(unit_name: str) -> float:
@@ -912,6 +917,7 @@ def do_links1(
     # as editors were having coniptions in displaying colour syntax
     # in edition, they weren't the easiest to read as the identations differed
     # from the function they were declared within
+    # TODO: change relevant string inputs to float
 
     field_precision: int = 15
     field_scale: int = 6
@@ -1041,5 +1047,1672 @@ def do_links1(
         "        result = 180 - in_angle\n"
         "    return result"
     )
-    arcpy.CalculateField_management(in_link_feat, field_name, expression, PY_VERSION, code_block)
+    arcpy.CalculateField_management(
+        in_link_feat, field_name, expression, PY_VERSION, code_block
+    )
     arcpy.AddMessage("fields added and calculated")
+
+    # select a subset, removing self-links (e.g., from S point of a feature to the N point of the same feature, indicated by 'temp == 1')
+    # removing links with angle_diff larger than the angle threshold
+    link_temp_feat = "linkTempFeat"
+    if link_direction == "FH":
+        where_clause = f"angle_diff < {angle_threshold}"
+    else:
+        where_clause = "(idRatio <> 1) And (angle_diff < {angle_threshold})"
+    arcpy.Select_analysis(in_link_feat, link_temp_feat, where_clause)
+
+    # further select from the above subset based on the speficied criteria
+    # for the link direction
+    in_feat_count = int(arcpy.GetCount_management(link_temp_feat).getOutput(0))
+    # inFeatCount = 0 indicates that there is not any feature satsifying the
+    # criterion specified (angle_diff < angleThreshold) for the link direction.
+
+    link_temp_feat1 = "linkTempFeat1"
+
+    if in_feat_count > 0:
+        lat = float(angle_threshold) + 20.0
+        dt = float(dist_threshold) * 0.3
+        dist_t1 = 0.2 * float(dist_threshold)
+        dist_t2 = -0.2 * float(dist_threshold)
+
+        # python-3.10 has a 'match/case' switch which would be better here
+        if link_direction == "SN":
+            # two "Or" conditions:
+            # 1. the northern feature is at some distance
+            #    north of the southern feature (Y_diff attribute) and the two
+            #    features have similar orientations
+            #    (within a threshold)(link_angle_diff attribute)
+            # 2. the northern and southern features are close together in both
+            #    the north-south direction (Y_diff attribute) and
+            #    link direction (LINK_DIST attribute)
+            # C1 | C2
+            condition1 = f"((Y_diff > {dist_t1}) And (link_angle_diff < {lat}))"
+            condition2 = f"((Y_diff < {dist_t1}) And (Y_diff > {dist_t2}) And (LINK_DIST < {dt}))"  # noqa: E501  # pylint: disable=line-too-long
+            where_clause = f"{condition1} Or {condition2}"
+        elif link_direction == "NS":
+            # two "Or" conditions:
+            # 1. the southern feature is at some distance south of the
+            #    northern feature (Y_diff attribute) and the two features have
+            #    similar orientations
+            #    (within a threshold) (link_angle_diff attribute)
+            # 2. the northern and southern features are close together in
+            #    both the north-south direction (Y_diff attribute) and
+            #    link direction (LINK_DIST attribute)
+            # C1 | C2
+            condition1 = f"((Y_diff < {dist_t2}) And (link_angle_diff < {lat}))"
+            condition2 = f"((Y_diff < {dist_t1}) And (Y_diff > {dist_t2}) And (LINK_DIST < {dt}))"  # noqa: E501  # pylint: disable=line-too-long
+            where_clause = f"{condition1} Or {condition2}"
+        elif link_direction == "WE":
+            # two "Or" conditions:
+            # 1. the western feature is at some distance west of the
+            #    eastern feature (X_diff attribute) and the two features have
+            #    similar orientations (within a threshold)
+            # 2. the western and eastern features are close together in both
+            #    the east-west direction (X_diff attribute) and link direction
+            # C1 | C2
+            condition1 = f"((X_diff > {dist_t1}) And (link_angle_diff < {lat}))"
+            condition2 = f"((X_diff < {dist_t1}) And (X_diff > {dist_t2}) And (LINK_DIST < {dt}))"  # noqa: E501  # pylint: disable=line-too-long
+            where_clause = f"{condition1} Or {condition2}"
+        elif link_direction == "EW":
+            # two "Or" conditions:
+            # 1. the eastern feature is at some distance east of the
+            #    western feature (X_diff attribute) and the two features
+            #    have similar orientations (within a threshold)
+            # 2. the western and eastern features are close together in both
+            #    the east-west direction (X_diff attribute) and link direction
+            # C1 | C2
+            condition1 = f"((X_diff < {dist_t2}) And (link_angle_diff < {lat}))"
+            condition2 = f"((X_diff < {dist_t1}) And (X_diff > {dist_t2}) And (LINK_DIST < {dt}))"  # noqa: E501  # pylint: disable=line-too-long
+            where_clause = f"{condition1} Or {condition2}"
+        elif link_direction == "EN":
+            # several "And" conditons:
+            # 1. the orientation of the eastern feature (angle1 attribute)
+            #    must be 90-135
+            # 2. the orientation of the northern feature (angle2 attribute)
+            #    must be 135-180
+            # 3. a complex "Or" conditon:
+            #    a) the eastern feature and the northern feature must be at
+            #       some distant away from each other in both
+            #       N-S (Y_diff attribute) and E-W (X_diff attribute) directions
+            #       and the two features have similar orientations
+            #       (within a threshold)
+            #    b) the eastern feature and the northern feature must be close
+            #       in link direction and also close in either the
+            #       N-S or E-W direction
+            # C1 & [{(C2 | C3) & C4} | C5]
+            condition1 = f"(angle1 >= 90) And (angle1 <= 135) And (angle2 >= 135)"  # noqa: E501  # pylint: disable=line-too-long
+            condition2 = f"((Y_diff < {dist_t1}) And (Y_diff > {dist_t2}))"
+            condition3 = f"((X_diff < {dist_t1}) And (X_diff > {dist_t2}))"
+            condition4 = f"(link_dist < {dt})"
+            condition5 = f"((Y_diff > {dist_t1}) And (X_diff < {dist_t2}) And (link_angle_diff < {lat}))"  # noqa: E501  # pylint: disable=line-too-long
+            where_clause = f"{condition1} And ((({condition2} Or {condition3}) And {condition4}) Or {condition5})"  # noqa: E501  # pylint: disable=line-too-long
+        elif link_direction == "NE":
+            # several "And" conditons:
+            # 1. the orientation of the northern feature (angle1 attribute)
+            #    must be 135-180; and 2. the orientation of the eastern
+            #    feature (angle1 attribute) must be 135-180
+            # 3. a complex "Or" conditon:
+            #    a) the northern feature and the eastern feature must be at
+            #       some distant away from each other in both
+            #       N-S (Y_diff attribute) and E-W (X_diff attribute) directions
+            #       and the two features have similar orientations
+            #       (within a threshold)
+            #    b) the eastern feature and the northern feature must be close
+            #       in link direction and also close in either the
+            #       N-S or E-W direction
+            # C1 & [{(C2 | C3) & C4} | C5]
+            condition1 = f"(angle2 >= 90) And (angle2 <= 135) and (angle1 >= 135)"
+            condition2 = f"((Y_diff < {dist_t1}) And (Y_diff > {dist_t2}))"
+            condition3 = f"((X_diff < {dist_t1}) And (X_diff > {dist_t2}))"
+            condition4 = f"(link_dist < {dt})"
+            condition5 = f"((Y_diff < {dist_t2}) And (X_diff > {dist_t1}) And (link_angle_diff < {lat}))"  # noqa: E501  # pylint: disable=line-too-long
+            where_clause = f"{condition1} And ((({condition2} Or {condition3}) And {condition4}) Or {condition5})"  # noqa: E501  # pylint: disable=line-too-long
+        elif link_direction == "SW":
+            # several "And" conditons:
+            # 1. the orientation of the southern feature must be 135-180
+            # 2. the orientation of the western feature must be 90-135
+            # 3. a complex "Or" conditon:
+            #    a) the southern feature and the western feature must be at
+            #       some distant away from each other in both N-S and
+            #       E-W directions and the two features have similar
+            #       orientations (within a threshold)
+            # b) the southern feature and the western feature must be close
+            #    in link direction and also close in either the
+            #    N-S or E-W direction
+            # C1 & [{(C2 | C3) & C4} | C5]
+            condition1 = f"(angle1 >= 135) And (angle2 >=90) And (angle2 <= 135)"
+            condition2 = f"((Y_diff < {dist_t1}) And (Y_diff > {dist_t2}))"
+            condition3 = f"((X_diff < {dist_t1}) And (X_diff > {dist_t2}))"
+            condition4 = f"(link_dist < {dt})"
+            condition5 = f"((Y_diff > {dist_t1}) And (X_diff < {dist_t2}) And (link_angle_diff < {lat}))"
+            where_clause = f"{condition1} And ((({condition2} Or {condition3}) And {condition4}) Or {condition5})"  # noqa: E501  # pylint: disable=line-too-long
+        elif link_direction == "WS":
+            # several "And" conditons:
+            # 1. the orientation of the western feature must be 90-135
+            # 2. the orientation of the southern feature must be 135-180
+            # 3. a complex "Or" conditon:
+            #    a) the western feature and the southern feature must be at
+            #       some distant away from each other in both N-S and E-W
+            #       directions and the two features have similar orientations
+            #       (within a threshold)
+            #    b) the southern feature and the western feature must be close
+            #       in link direction and also close in either the
+            #       N-S or E-W direction
+            # C1 & [{(C2 | C3) & C4} | C5]
+            condition1 = f"(angle2 = 135) And (angle1 >= 90) And (angle1 <= 135)"
+            condition2 = f"((Y_diff < {dist_t1}) And (Y_diff > {dist_t2}))"
+            condition3 = f"((X_diff < {dist_t1}) And (X_diff > {dist_t2}))"
+            condition4 = f"(link_dist < {dt})"
+            condition5 = f"((Y_diff < {dist_t2}) And (X_diff > {dist_t1}) And (link_angle_diff < {lat}))"
+            where_clause = f"{condition1} And ((({condition2} Or {condition3}) And {condition4}) Or {condition5})"  # noqa: E501  # pylint: disable=line-too-long
+        elif link_direction == "SE":
+            # several "And" conditons:
+            # 1. the orientation of the southern feature must be 0-45
+            # 2. the orientation of the eastern feature must be 45-90
+            # 3. a complex "Or" conditon:
+            #    a) the southern feature and the eastern feature must be at
+            #       some distant away from each other in both
+            #       N-S and E-W directions and the two features have similar
+            #       orientations (within a threshold)
+            #    b) the southern feature and the eastern feature must be close
+            #       in link direction and also close in either the
+            #       N-S or E-W direction
+            # C1 & [{(C2 | C3) & C4} | C5]
+            condition1 = f"(angle1 <= 45) And (angle2 >= 45) And (angle2 <= 90)"
+            condition2 = f"((Y_diff < {dist_t1}) And (Y_diff > {dist_t2}))"
+            condition3 = f"((X_diff < {dist_t1}) And (X_diff > {dist_t2}))"
+            condition4 = f"(link_dist < {dt})"
+            condition5 = f"((Y_diff > {dist_t1}) And (X_diff > {dist_t1}) And (link_angle_diff < {lat}))"
+            where_clause = f"{condition1} And ((({condition2} Or {condition3}) And {condition4}) Or {condition5})"
+        elif link_direction == "ES":
+            # several "And" conditons:
+            # 1. the orientation of the eastern feature must be 45-90
+            # 2. the orientation of the eastern feature must be 0-45
+            # 3. a complex "Or" conditon:
+            #    a) the southern feature and the eastern feature must be at
+            #       some distant away from each other in both
+            #       N-S and E-W directions and the two features have similar
+            #       orientations (within a threshold)
+            #    b) the southern feature and the eastern feature must be close
+            #       in link direction and also close in either the
+            #       N-S or E-W direction
+            # C1 & [{(C2 | C3) & C4} | C5]
+            condition1 = f"(angle2 <= 45) And (angle1 >= 45) And (angle1 <= 90)"
+            condition2 = f"((Y_diff < {dist_t1}) And (Y_diff > {dist_t2}))"
+            condition3 = f"((X_diff < {dist_t1}) And (X_diff > {dist_t2}))"
+            condition4 = f"(link_dist < {dt})"
+            condition5 = f"((Y_diff < {dist_t2}) And (X_diff < {dist_t2}) And (link_angle_diff < {lat}))"
+            where_clause = f"{condition1} And ((({condition2} Or {condition3}) And {condition4}) Or {condition5})"
+        elif link_direction == "WN":
+            # several "And" conditons:
+            # 1. the orientation of the western feature must be 45-90
+            # 2. the orientation of the northern feature must be 0-45
+            # 3. a complex "Or" conditon:
+            #    a) the western feature and the northern feature must be at
+            #       some distant away from each other in both
+            #       N-S and E-W directions and the two features have similar
+            #       orientations (within a threshold)
+            #    b) the western feature and the northern feature must be close
+            #       in link direction and also close in either the
+            #       N-S or E-W direction
+            # C1 & [{(C2 | C3) & C4} | C5]
+            condition1 = f"(angle1 >= 45) And (angle1 <= 90) And (angle2 <= 45))"
+            condition2 = f"((Y_diff < {dist_t1}) And (Y_diff > {dist_t2}))"
+            condition3 = f"((X_diff < {dist_t1}) And (X_diff > {dist_t2}))"
+            condition4 = f"(link_dist < {dt})"
+            condition5 = f"((Y_diff > {dist_t1}) And (X_diff > {dist_t1}) And (link_angle_diff < {lat}))"
+            where_clause = f"{condition1} And ((({condition2} Or {condition3}) And {condition4}) Or {condition5})"
+        elif link_direction == "NW":
+            # several "And" conditons:
+            # 1. the orientation of the northern feature must be 0-45
+            # 2. the orientation of the western feature must be 45-90
+            # 3. a complex "Or" conditon:
+            #    a) the northern feature and the western feature must be at
+            #       some distant away from each other in both
+            #       N-S and E-W directions and the two features have similar
+            #       orientations (within a threshold)
+            #    b) the western feature and the northern feature must be close
+            #       in link direction and also close in either the
+            #       N-S or E-W direction
+            # C1 & [{(C2 | C3) & C4} | C5]
+            condition1 = f"((angle2 >= 45) And (angle2 <= 90) And (angle1 <= 45))"
+            condition2 = f"((Y_diff < {dist_t1}) And (Y_diff > {dist_t2}))"
+            condition3 = f"((X_diff < {dist_t1}) And (X_diff > {dist_t2}))"
+            condition4 = f"(link_dist < {dt})"
+            condition5 = f"((Y_diff < {dist_t2}) And (X_diff < {dist_t2}) And (link_angle_diff < {lat}))"  # noqa: E501  # pylint: disable=line-too-long
+            where_clause = f"{condition1} And ((({condition2} Or {condition3}) And {condition4}) Or {condition5})"  # noqa: E501  # pylint: disable=line-too-long
+        elif link_direction == "FH":
+            # connect foot to head features, not longer in use
+            # TODO; if no longer in use, it is better to remove or at the very
+            #       least, comment this whole condition out
+            # two "Or" conditions:
+            # 1. the two features are close together in both
+            #    north-south and east-west directions
+            #    (X_diff and Y_diff attributes) and
+            #    link direction (LINK_DIST attribute)
+            # 2. the two features are not close in either north-south
+            #    (Y_diff attribute) or east-west directions (X_diff attribute)
+            #    and they have similar orientations (within a threshold)
+            #    (link_angle_diff attribute).
+            # ((C1 & C2) | C3) | ((C4 | C5) And C6)
+            condition1 = f"(X_diff <= {dist_t1}) And (X_diff >= {dist_t2})"
+            condition2 = f"(Y_diff <= {dist_t1}) And (Y_diff >= {dist_t2})"
+            condition3 = f"(LINK_DIST < {dt})"
+            condition4 = f"(X_diff > {dist_t1}) Or (X_diff < {dist_t2})"
+            condition5 = f"(Y_diff > {dist_t2}) Or (Y_diff < {dist_t2})"  # TODO; confirm correctness # noqa: E501  # pylint: disable=line-too-long
+            condition6 = f"(link_angle_diff < {lat})"
+            where_clause = f"(({condition1} & {condition2}) | {condition3}) | (({condition4} | {condition5}) And {condition6})"  # noqa: E501  # pylint: disable=line-too-long
+
+        arcpy.Select_analysis(link_temp_feat, link_temp_feat1, where_clause)
+    else:
+        arcpy.Copy_management(link_temp_feat, link_temp_feat1)
+
+    arcpy.AddMessage("first selection done")
+
+    # further selection
+    in_feat_count = int(arcpy.GetCount_management(link_temp_feat1).getOutput(0))
+
+    if in_feat_count > 0:
+        # here is different between the combined option and the other two options
+        # the combined option would likely generate multiple records have the
+        # same [originID,destID]
+        # we need to select the one with minimum distance
+        cursor = arcpy.SearchCursor(link_temp_feat1)
+
+        # TODO; the `list` appended to the variable name is superfluous
+        #       scan through to ensure the name can be simplified eg temp_ids
+        # TODO; once we're clear on the explicit type, change `Any` to reflect it
+        temp_id_list: list[Any] = []
+        origin_id_list: list[Any] = []
+        dest_id_list: list[Any] = []
+        dist_list: list[Any] = []
+        id_list_list: list[tuple[list[Any], list[Any]]] = []
+
+        for row in cursor:
+            temp_id = row.getValue("tempID")
+            origin_id = row.getValue("ORIG_FID")
+            dest_id = row.getValue("DEST_FID")
+            dist = row.getValue("LINK_DIST")
+
+            # changing to tuple to be clear on the dimensionality
+            id_list = (
+                origin_id,
+                dest_id,
+            )
+            temp_id_list.append(temp_id)
+            origin_id_list.append(origin_id)
+            dest_id_list.append(dest_id)
+            dist_list.append(dist)
+            id_list_list.append(id_list)
+
+        leng1 = len(id_list_list)
+        id_list_list1 = unique_2D(id_list_list)
+        leng2 = len(id_list_list1)
+
+        if leng1 > leng2:
+            # Mid points and Most distant points option
+            # (ie. the combined option) selected
+            temp_id_list1 = []
+            ids_array = numpy.asarray(id_list_list)
+
+            for id_list in id_list_list:
+                indices = numpy.where(
+                    (ids_array[:, 0] == id_list[0]) & (ids_array[:, 1] == id_list[1])
+                )[0]
+
+                index_list = indices.tolist()
+                dist_list_temp = []
+                for index in indices:
+                    dist_list_temp.append(dist_list[index])
+
+                # select the index with minimum distance
+                j = index_list[dist_list_temp.index(min(dist_list_temp))]
+                temp_id_list1.append(temp_id_list[j])
+
+            # select subset
+            text = ",".join([str(i) for i in temp_id_list1])
+            text = f"({text})"
+            where_clause = f"tempID IN {text}"
+            arcpy.Select_analysis(link_temp_feat1, out_link_feat1, where_clause)
+        else:
+            # one of the other two options selected
+            arcpy.Copy_management(link_temp_feat1, out_link_feat1)
+    else:
+        arcpy.Copy_management(link_temp_feat1, out_link_feat1)
+
+    arcpy.AddMessage("second selection done")
+
+    # further selection
+    in_feat_count = int(arcpy.GetCount_management(out_link_feat1).getOutput(0))
+
+    if in_feat_count > 0:
+        # doing the third selection
+        # if multiple records have the same ORIG_FID or DEST_ID
+        # (eg., between [1,3] and [1,4] or between [1,10] and [2,10]),
+        # just select the one with min combination of distance and angle_diff
+        cursor = arcpy.SearchCursor(out_link_feat1)
+
+        temp_id_list: list[Any] = []
+        origin_id_list: list[Any] = []
+        dest_id_list: list[Any] = []
+        dist_list: list[Any] = []
+        angle_list: list[Any] = []
+
+        for row in cursor:
+            # TODO; it'd be cleaner to just do
+            #       temp_id_list.append(row.getValue("tempID"))
+            temp_id = row.getValue("tempID")
+            origin_id = row.getValue("ORIG_FID")
+            dest_id = row.getValue("DEST_FID")
+            dist = row.getValue("LINK_DIST")
+            angle = row.getValue("angle_diff")
+
+            temp_id_list.append(temp_id)
+            origin_id_list.append(origin_id)
+            dest_id_list.append(dest_id)
+            dist_list.append(dist)
+            angle_list.append(angle)
+
+        # in_id_list_list: list[tuple[list[Any], list[Any]]] = []
+        # for i, val in enumerate(origin_id_list):
+        #     in_id_list_list.append((val, dest_id_list[i]))
+        in_id_list_list = list(zip(origin_id_list, dest_id_list))
+
+        # call the doLists() function to conduct the selection
+        list1, list2, list3, list4, list5 = do_lists(
+            origin_id_list,
+            dest_id_list,
+            in_id_list_list,
+            dist_list,
+            angle_list,
+            dist_threshold,
+            angle_threshold,
+            dist_weight,
+            angle_weight,
+        )
+
+        # update the list
+        temp_id_list1 = [in_id_list_list.index(i) for i in list3]
+
+        # select subset
+        text = ",".join([str(i) for i in temp_id_list1])
+        text = f"({text})"
+        where_clause = f"tempID IN {text}"
+        arcpy.Select_analysis(out_link_feat1, out_link_feat2, where_clause)
+    else:
+        arcpy.Copy_management(out_link_feat1, out_link_feat2)
+
+    arcpy.AddMessage("third selection done")
+
+    arcpy.Delete_management(link_temp_feat)
+    arcpy.Delete_management(link_temp_feat1)
+
+
+# line 3568
+def get_index(
+    index: numpy.ndarray,
+    distances: numpy.ndarray,
+    angles: numpy.ndarray,
+    dist_threshold: float,
+    angle_threshold: float,
+    dist_weight: float,
+    angle_weight: float,
+) -> int:
+    """
+    Return the indices based on distance and angle criteria.
+
+    :param index:
+        Initial index list.
+
+    :param distances:
+        Initial distance list.
+
+    :param angles:
+        Initial angle list.
+
+    :param dist_threshold:
+        Threshold value for distance between two nearby features.
+
+    :param angle_threshold:
+        Threshold value for the intersecting angle between two nearby features.
+
+    :param dist_weight:
+        Weight assigned to distance; used to calculate a combination metric
+        from distance and angle.
+
+    :param angle_weight:
+        Weight assigned to angle; used to calculate a combination metric
+        from distance and angle.
+    """
+    # TODO: the input lists should be arrays.
+    #       that way manual looping can be avoided.
+    #       pay the extra memory to perform it faster with numpy
+    #       Alternatively, we force to arrays for this routine ...
+
+    # the original code, working on lists
+    # distThreshold = float(distThreshold)
+    # angleThreshold = float(angleThreshold)
+    # distWeight = float(distWeight)
+    # angleWeight = float(angleWeight)
+
+    # cL = []  # elements in list cL are calculated from distance and angle
+    # i = 0
+    # while i < len(distList):
+    #     d = distList[i] / distThreshold
+    #     a = angleList[i] / angleThreshold
+    #     # calculate weighted average from distWeight and angleWeight
+    #     c = (d * distWeight + a * angleWeight) / (distWeight + angleWeight)
+    #     cL.append(c)
+    #     i += 1
+
+    # cArr = np.asarray(cL)
+    # indices = np.where(cArr == np.min(cArr))[0]
+    # # if multiple elements satisfying the minimum criteria, select the one with a smaller anlge
+    # if len(indices) > 1:
+    #     aList = []
+    #     for i in indices:
+    #         aList.append(angleList[i])
+    #     return indexList[angleList.index(min(aList))]
+    # else:
+    #     return indexList[indices[0]]
+
+    # numpy method; assumes everything is 1D
+    dn = distances / dist_threshold
+    an = angles / angle_threshold
+    weight_sum = dist_weight + angle_weight
+
+    # calculate weighted average from distWeight and angleWeight
+    weighted = (dn * dist_weight + an * angle_weight) / weight_sum
+
+    wh = weighted == numpy.min(weighted)
+
+    # if multiple elements satisfying the minimum criteria,
+    # select the one with a smaller angle
+    indices = numpy.arange(len(weighted))
+    angle_idx = angles[wh].argmin()
+
+    idx = indices[wh][angle_idx]
+
+    return int(index[idx])
+
+
+# 3612
+def do_lists(
+    feat_id1_list: list[Any],
+    feat_id2_list: list[Any],
+    in_id_list_list: list[tuple[list[Any], list[Any]]],
+    dist_list: list[Any],
+    angle_list: list[Any],
+    dist_threshold: float,
+    angle_threshold: float,
+    dist_weight: float,
+    angle_weight: float,
+):
+    """
+    Updates ids list when multiple elements share "from" or "to" points.
+
+    :param feat_id1_list:
+        Feature IDs of the `from` points.
+
+    :param feat_id2_list:
+        Feature IDs of the `to` points.
+
+    :param in_id_list_list:
+        List of tuples containing (feat_id1, feat_id2).
+
+    :param dist_list:
+        Initial distance list.
+
+    :param angle_list:
+        Initial angle list.
+
+    :param dist_threshold:
+        Threshold value for distance between two nearby features.
+
+    :param angle_threshold:
+        Threshold value for the intersecting angle between two nearby features.
+
+    :param dist_weight:
+        Weight assigned to distance; used to calculate a combination metric
+        from distance and angle.
+
+    :param angle_weight:
+        Weight assigned to angle; used to calculate a combination metric
+        from distance and angle.
+    """
+    # TODO:
+    #     Much refactoring could be done here. again the reworking of lists
+    #     to numpy arrays.
+    #     Also, this func could contain a private func that performs the loops
+    #     and returns the result, or turn this func itself to iterate once,
+    #     and the caller be responsible for iterating
+    out_id_list_list1: list[Any] = []
+    out_id_list_list2: list[Any] = []
+    feat_id1_list1: list[Any] = []
+    feat_id1_list2: list[Any] = []
+    feat_id2_list1: list[Any] = []
+    feat_id2_list2: list[Any] = []
+    dist_list1: list[Any] = []
+    dist_list2: list[Any] = []
+    angle_list1: list[Any] = []
+    angle_list2: list[Any] = []
+
+    # first round, doing features sharing featID1 (featID of the from point)
+    # each element in outIDListList1 contains ids of connected features
+    # e.g. [[1, 2, 3, 5], [4, 9], [6, 13]]
+    for i, ids in enumerate(in_id_list_list):
+        feat_id1 = feat_id1_list[i]
+
+        # if multiple pairs share the same feat_id1
+        # (e.g. [1,2],[1,3]), select the feature pair with the minimum
+        # combination of intersecting angle and distance
+        if feat_id1_list1.count(feat_id1) > 1:
+            indices = numpy.where(numpy.asarray(feat_id1_list) == feat_id1)[0]
+            angles_temp = numpy.asarray(angle_list)[indices]
+            dists_temp = numpy.asarray(dist_list)[indices]
+            j = get_index(
+                indices,
+                dists_temp,
+                angles_temp,
+                dist_threshold,
+                angle_threshold,
+                dist_weight,
+                angle_weight,
+            )
+            ids1 = in_id_list_list[j]
+
+            # only append ids1 if it is not already in the existing list of lists
+            if ids1 not in out_id_list_list1:
+                out_id_list_list1.append(ids1)
+
+        else:  # otherwise, just keep the pair
+            out_id_list_list1.append(ids)
+
+    # update lists
+    for ids in out_id_list_list1:
+        i = in_id_list_list.index(ids)
+        feat_id1_list1.append(feat_id1_list[i])
+        feat_id2_list1.append(feat_id2_list[i])
+        dist_list1.append(dist_list[i])
+        angle_list1.append(angle_list[i])
+
+    # second round, doing features sharing featID2
+    # the inputs are the updated lists from the first round
+    for i, ids in enumerate(out_id_list_list1):
+        feat_id2 = feat_id2_list1[i]
+
+        # if multiple pairs share the same feat_id2
+        # (e.g. [3,2],[4,2]), select the feature pair with the minimum
+        # combination of intersecting angle and distance
+        if feat_id2_list1.count(feat_id2) > 1:
+            indices = numpy.where(numpy.asarray(feat_id2_list1) == feat_id2)[0]
+            angles_temp = numpy.asarray(angle_list1)[indices]
+            dists_temp = numpy.asarray(dist_list1)[indices]
+            j = get_index(
+                indices,
+                dists_temp,
+                angles_temp,
+                dist_threshold,
+                angle_threshold,
+                dist_weight,
+                angle_weight,
+            )
+            ids1 = out_id_list_list1[j]
+
+            # only append ids1 if it is not already in the existing list of lists
+            if ids1 not in out_id_list_list2:
+                out_id_list_list2.append(ids1)
+
+        else:  # otherwise, just keep the pair
+            out_id_list_list2.append(ids)
+
+    # update lists
+    for ids in out_id_list_list2:
+        i = out_id_list_list1.index(ids)
+        feat_id1_list2.append(feat_id1_list1[i])
+        feat_id2_list2.append(feat_id2_list1[i])
+        dist_list2.append(dist_list1[i])
+        angle_list2.append(angle_list1[i])
+
+    result = (
+        feat_id1_list2,
+        feat_id2_list2,
+        out_id_list_list2,
+        dist_list2,
+        angle_list2,
+    )
+
+    return result
+
+
+def do_lists_v2(
+    feat_id1_list: list[Any],
+    feat_id2_list: list[Any],
+    in_id_list_list: list[tuple[list[Any], list[Any]]],
+    dist_list: list[Any],
+    angle_list: list[Any],
+    dist_threshold: float,
+    angle_threshold: float,
+    dist_weight: float,
+    angle_weight: float,
+):
+    """
+    TODO.
+    """
+
+    def update(
+        feat_ids: list[Any],
+        in_ids: list[tuple[list[Any], list[Any]]],
+        distances: list[Any],
+        angles: list[Any],
+        dist_threshold: float,
+        angle_threshold: float,
+        dist_weight: float,
+        angle_weight: float,
+    ) -> list[tuple[list[Any], list[Any]]]:
+        """Helper func private to do_lists."""
+        out_ids: list[tuple[list[Any], list[Any]]] = []
+
+        # first round, doing features sharing featID1 (featID of the from point)
+        # each element in outIDListList1 contains ids of connected features
+        # e.g. [[1, 2, 3, 5], [4, 9], [6, 13]]
+        for i, ids in enumerate(in_ids):
+            feat_id = feat_ids[i]
+
+            # if multiple pairs share the same feat_id1
+            # (e.g. [1,2],[1,3]), select the feature pair with the minimum
+            # combination of intersecting angle and distance
+            if feat_ids.count(feat_id) > 1:
+                indices = numpy.where(numpy.asarray(feat_ids) == feat_id)[0]
+                angles_temp = numpy.asarray(angles)[indices]
+                dists_temp = numpy.asarray(distances)[indices]
+                j = get_index(
+                    indices,
+                    dists_temp,
+                    angles_temp,
+                    dist_threshold,
+                    angle_threshold,
+                    dist_weight,
+                    angle_weight,
+                )
+                ids1 = in_ids[j]
+
+                # only append ids1 if it is not already in the existing list of lists
+                if ids1 not in out_ids:
+                    out_ids.append(ids1)
+
+            else:  # otherwise, just keep the pair
+                out_ids.append(ids)
+
+        return out_ids
+
+    # temps; first pass
+    feat_ids1_list1: list[Any] = []
+    feat_ids2_list1: list[Any] = []
+    dist_list1: list[Any] = []
+    angle_list1: list[Any] = []
+
+    # first round, doing features sharing featID1 (featID of the from point)
+    # each element in outIDListList1 contains ids of connected features
+    # e.g. [[1, 2, 3, 5], [4, 9], [6, 13]]
+    out_ids1 = update(
+        feat_id1_list,
+        in_id_list_list,
+        dist_list,
+        angle_list,
+        dist_threshold,
+        angle_threshold,
+        dist_weight,
+        angle_weight,
+    )
+
+    # update feature lists
+    for ids in out_ids1:
+        i = in_id_list_list.index(ids)
+        feat_ids1_list1.append(feat_id1_list[i])
+        feat_ids2_list1.append(feat_id2_list[i])
+        dist_list1.append(dist_list[i])
+        angle_list1.append(angle_list[i])
+
+    # return vars; second pass
+    feat_ids1_list2: list[Any] = []
+    feat_ids2_list2: list[Any] = []
+    dist_list2: list[Any] = []
+    angle_list2: list[Any] = []
+
+    # second round, doing features sharing featID2
+    # the inputs are the updated lists from the first round
+    out_ids2 = update(
+        feat_ids2_list1,
+        out_ids1,
+        dist_list1,
+        angle_list1,
+        dist_threshold,
+        angle_threshold,
+        dist_weight,
+        angle_weight,
+    )
+
+    # update feature lists
+    for ids in out_ids2:
+        i = out_ids1.index(ids)
+        feat_ids1_list2.append(feat_ids1_list1[i])
+        feat_ids2_list2.append(feat_ids2_list1[i])
+        dist_list2.append(dist_list1[i])
+        angle_list2.append(angle_list1[i])
+
+    result = (
+        feat_ids1_list2,
+        feat_ids2_list2,
+        out_ids2,
+        dist_list2,
+        angle_list2,
+    )
+
+    return result
+
+
+def do_lists1(
+    feat_id1_list: list[Any],
+    feat_id2_list: list[Any],
+    in_id_list_list: list[tuple[list[Any], list[Any]]],
+    dist_list: list[Any],
+    angle_list: list[Any],
+    dist_threshold: float,
+    angle_threshold: float,
+    dist_weight: float,
+    angle_weight: float,
+) -> list[tuple[list[Any], list[Any]]]:
+    """
+    Further updates ids list when multiple elements connected through sharing
+    `from` and `to` points.
+    Must be called after do_lists()
+    (e.g., using the outputs from do_lists() as inputs)
+
+    :param feat_id1_list:
+        Feature IDs of the `from` points.
+
+    :param feat_id2_list:
+        Feature IDs of the `to` points.
+
+    :param in_id_list_list:
+        List of tuples containing (feat_id1, feat_id2).
+
+    :param dist_list:
+        Initial distance list.
+
+    :param angle_list:
+        Initial angle list.
+
+    :param dist_threshold:
+        Threshold value for distance between two nearby features.
+
+    :param angle_threshold:
+        Threshold value for the intersecting angle between two nearby features.
+
+    :param dist_weight:
+        Weight assigned to distance; used to calculate a combination metric
+        from distance and angle.
+
+    :param angle_weight:
+        Weight assigned to angle; used to calculate a combination metric
+        from distance and angle.
+    """
+    out_list_list: list[tuple[list[Any], list[Any]]] = []
+
+    # np arrays
+    # TODO; look to work directly with np arrays rather than back and forth conversion
+    feat_ids1 = numpy.asarray(feat_id1_list)
+    feat_ids2 = numpy.asarray(feat_id2_list)
+    angles = numpy.asarray(angle_list)
+    distances = numpy.asarray(dist_list)
+
+    for i, ids in enumerate(in_id_list_list):
+        temp_list: list[tuple[list[Any], list[Any]]] = []
+        feat_id1 = feat_id1_list[i]
+        feat_id2 = feat_id2_list[i]
+
+        if feat_id2_list.count(feat_id1) > 0:
+            # if two pairs (e.g., [2,1],[5,2]), indicates the three features
+            # are connected, so add both pair
+            indices = numpy.where(feat_ids2 == feat_id1)[0]
+            angles_temp = angles[indices]
+            dists_temp = distances[indices]
+
+            j = get_index(
+                indices,
+                dists_temp,
+                angles_temp,
+                dist_threshold,
+                angle_threshold,
+                dist_weight,
+                angle_weight,
+            )
+            ids1 = in_id_list_list[j]
+
+            temp_list.append(ids)
+            temp_list.append(ids1)
+
+            temp_list = unique(temp_list)
+
+            if temp_list not in out_list_list:
+                out_list_list.append(temp_list)
+        elif feat_id1_list.count(feat_id2) > 0:
+            # if two pairs (e.g., [1,2],[2,5]), indicates the three features
+            # are connected, so add both pairs
+            indices = numpy.where(feat_ids1 == feat_id1)[0]
+            angles_temp = angles[indices]
+            dists_temp = distances[indices]
+
+            j = get_index(
+                indices,
+                dists_temp,
+                angles_temp,
+                dist_threshold,
+                angle_threshold,
+                dist_weight,
+                angle_weight,
+            )
+            ids1 = in_id_list_list[j]
+
+            temp_list.append(ids)
+            temp_list.append(ids1)
+
+            temp_list = unique(temp_list)
+
+            if temp_list not in out_list_list:
+                out_list_list.append(temp_list)
+        else:
+            # otherwise, just keep the pair
+            out_list_list.append(ids)
+
+    return out_list_list
+
+
+# 3844
+def merge_list(data: list[list[int]]):
+    """
+    Merges common elements from multiple lists into one list.
+
+    :param data:
+        List of lists containing feature IDs eg:
+        [[1, 2, 3, 5], [4, 9], [6, 13]]
+    """
+    # each element list contains ids of connected features e.g.
+    # [[1, 2, 3, 5], [4, 9], [6, 13]],
+    result: list[list[int]] = []
+
+    data_cp = data.copy()
+
+    # each loop remove an element list from inList, until none left
+    # at the same time, build a new list (of list)
+    # TODO: the issue that jumps out in this approach is that if there are
+    #       are no common elements, this while loop could run forever.
+    #       Confirm that this would never be the case
+    while data:
+        record = data[0].copy()
+
+        # compare the element with all elements in the list one by one
+        for item in data_cp:
+            # find the number of common elements bewtween the two lists
+            length = calculate_common(record, item)
+            if length:
+                data.remove(item)
+                for el in item:
+                    record.append(el)
+
+                # unique values within a list
+                record = unique(record)
+
+        unq = unique(list(flatten(record)))
+        result.append(unq)
+        data_cp = data.copy()
+
+    return result
+
+
+def create_lists(linked_features: list[str]):
+    """
+    Wrapper around ArcGIS to read the records for each feature into
+    Python and return lists for the following attributes:
+        * angle_diff
+        * LINK_DIST
+        * featID1
+        * featID2
+    """
+    feat_ids1: list[int] = []
+    feat_ids2: list[int] = []
+    feat_ids: list[list[int]] = []
+    angles: list[float] = []
+    distances: list[float] = []
+
+    for link_feat in linked_features:
+        feat_count = int(arcpy.GetCount_management(link_feat).getOutput(0))
+        arcpy.AddMessage(f"{link_feat} has {feat_count} features.")
+
+        if feat_count:
+            cursor = arcpy.SearchCursor(link_feat)
+
+            for row in cursor:
+                angles.append(row.getValue("angle_diff"))
+                distances.append(row.getValue("LINK_DIST"))
+
+                feat_id1 = row.getValue("featID1")
+                feat_id2 = row.getValue("featID2")
+                feat_ids1.append(feat_id1)
+                feat_ids2.append(feat_id2)
+                feat_ids.append([feat_id1, feat_id2])
+
+    return feat_ids1, feat_ids2, feat_ids, distances, angles
+
+
+# TODO; the `old` label in the function inidicates its an older version.
+#       confirm that this function is no longer required
+# 3904
+def direction_points_old(
+    in_feat_class: str, mbr_line_class: str, temp_folder: Path, out_point_feat: Path
+) -> None:
+    """
+    Generate direction point features from the input features and the bounding
+    rectangle features.
+    This one would potentially resulted in a small number of incorrect points,
+    e.g. two points on different features may be on the same line.
+
+    :param in_feat_class:
+        Represents the polygons to be connected;
+        input Bathymetric High Features.
+
+    :param mbr_line_class:
+        A subset of lines from the the minimum bounding rectangles
+        of in_feat_class. For each feature that are two lines,
+        either N and S or E and W.
+
+    :param temp_folder:
+        A filepath to a location that will store the temporary files.
+
+    :param out_point_feat:
+        Output direction point features.
+
+    :notes:
+        The label `class` isn't referring to a Python class,
+        but a classification.
+    """
+    in_feat_vertices = "inFeatVertices"
+
+    # convert each input feature to points;
+    arcpy.FeatureVerticesToPoints_management(in_feat_class, in_feat_vertices, "ALL")
+
+    layer1 = "layer1"
+    arcpy.MakeFeatureLayer_management(in_feat_vertices, layer1)
+
+    # select those points that are on the selected bounding rectangle
+    # boundaries (N and S or E and W)
+    arcpy.SelectLayerByLocation_management(layer1, "INTERSECT", mbr_line_class)
+    selected_points = "selectedPoints1"
+    arcpy.CopyFeatures_management(layer1, selected_points)
+
+    # spatial join to append attributes from mbr_line_class
+    join_feat = "joinFeat"
+    arcpy.SpatialJoin_analysis(selected_points, mbr_line_class, join_feat)
+
+    # only need these attributes, with additional
+    # POINT_X and POINT_Y attributes added
+    fields_to_keep = ["featID", "rectangle_Orientation", "direction"]
+    fields_to_delete = []
+    fields = arcpy.ListFields(join_feat)
+
+    for field in fields:
+        if not field.required:
+            if field.name not in fields_to_keep:
+                fields_to_delete.append(field.name)
+
+    arcpy.DeleteField_management(join_feat, fields_to_delete)
+    arcpy.AddXY_management(join_feat)
+
+    # delete schema.ini which may contains incorrect data types
+    schema_pth = temp_folder.joinpath("schema.ini")
+    if schema_pth.exists():
+        schema_pth.unlink()
+
+    # export the attributes to a csv file
+    csv_pth = temp_folder.joinpath("joinFeat_points.csv")
+    arcpy.CopyRows_management(join_feat, str(csv_pth))
+
+    # read the csv file as a pandas data frame
+    point_df = pandas.read_csv(csv_pth, sep=",", header=0, index_col="OBJECTID")
+
+    ids = []
+    angles = []
+    directions = []
+    x_vals = []
+    y_vals = []
+
+    # loop through each feature
+    for fid in point_df.featID.unique():
+        # intend to select two points (e.g., E and W, W and E, N and S, S and N)
+        # for each input feature; each point requires one row
+        ids.append(fid)  # for first point (one element in the list)
+        ids.append(fid)  # for second point (next element in the list)
+
+        # temp_df contains candidate points for a selected polygon feature
+        temp_df = point_df.loc[point_df.featID == fid]
+        idx = temp_df.POINT_Y == temp_df.POINT_Y.max()
+        angle = temp_df.loc[idx]["rectangle_Orientation"].values[0]
+        angles.append(angle)
+        angles.append(angle)
+
+        if (angle >= 45) & (angle <= 135):
+            # POINT_X.max() indicates E
+            idx = temp_df.POINT_X == temp_df.POINT_X.max()
+            subs = temp_df.loc[idx]
+            directions.append(subs["direction"].values[0])
+            x_vals.append(subs["POINT_X"].values[0])
+            y_vals.append(subs["POINT_Y"].values[0])
+
+            # POINT_X.min() indicates W
+            idx = temp_df.POINT_X == temp_df.POINT_X.min()
+            subs = temp_df.loc[idx]
+            directions.append(subs["direction"].values[0])
+            x_vals.append(subs["POINT_X"].values[0])
+            y_vals.append(subs["POINT_Y"].values[0])
+        else:
+            # POINT_Y.max() indicates N
+            idx = temp_df.POINT_Y == temp_df.POINT_Y.max()
+            subs = temp_df.loc[idx]
+            directions.append(subs["direction"].values[0])
+            x_vals.append(subs["POINT_X"].values[0])
+            y_vals.append(subs["POINT_Y"].values[0])
+
+            # POINT_Y.min() indicates S
+            idx = temp_df.POINT_Y == temp_df.POINT_Y.min()
+            subs = temp_df.loc[idx]
+            directions.append(subs["direction"].values[0])
+            x_vals.append(subs["POINT_X"].values[0])
+            y_vals.append(subs["POINT_Y"].values[0])
+
+    # create a new dataframe
+    df = pandas.DataFrame(
+        {
+            "featID": ids,
+            "angle": angles,
+            "direction": directions,
+            "POINT_X": x_vals,
+            "POINT_Y": y_vals,
+        }
+    )
+
+    # export the dataframe to a csv file
+    out_pth = temp_folder.joinpath("joinFeat_points1_selected.csv")
+    df.to_csv(out_pth, sep=",", header=True)
+
+    # create point featureclass from the csv file
+    arcpy.XYTableToPoint_management(
+        str(out_pth),
+        str(out_point_feat),
+        "POINT_X",
+        "POINT_Y",
+        "#",
+        mbr_line_class,
+    )
+
+
+# TODO; the `old` label in the function inidicates its an older version.
+#       confirm that this function is no longer required.
+#       Also, is direction_points_old the preferred function???
+# 4051
+def direction_points_old1(
+    in_feat_class: str, mbr_line_class: str, temp_folder: Path, out_point_feat: Path
+) -> None:
+    """
+    Generate direction point features from the input features and the bounding
+    rectangle features.
+    This one would potentially resulted in a small number of incorrect points,
+    e.g. two points on different features may be on the same line.
+
+    :param in_feat_class:
+        Represents the polygons to be connected;
+        input Bathymetric High Features.
+
+    :param mbr_line_class:
+        A subset of lines from the the minimum bounding rectangles
+        of in_feat_class. For each feature that are two lines,
+        either N and S or E and W.
+
+    :param temp_folder:
+        A filepath to a location that will store the temporary files.
+
+    :param out_point_feat:
+        Output direction point features.
+
+    :notes:
+        The label `class` isn't referring to a Python class,
+        but a classification.
+        This function but is very time consuming
+    """
+
+    def arc_search_cursor(feature_label: str, direction: str, selected_points: str):
+        """
+        ArcGIS wrapper for search cursor. Not for generic use,
+        is specific to the function that this function is embedded within.
+        """
+        ids: list[int] = []
+        angles: list[float] = []
+        directions: list[str] = []
+        x_vals: list[float] = []
+        y_vals: list[float] = []
+
+        cursor = arcpy.SearchCursor(feature_label)
+        arcpy.AddMessage(f"Searching: {feature_label}")
+
+        for row in cursor:
+            feat_id = row.getValue("featID")
+            arcpy.AddMessage(f"featID: {feat_id}")
+
+            ids.append(feat_id)
+            angles.append(row.getValue("rectangle_Orientation"))
+            directions.append(direction)
+
+            temp_feat = "tempFeat"
+            where_clause = f"featID = {feat_id}"
+            arcpy.Select_analysis(selected_points, temp_feat, where_clause)
+
+            temp_feat1 = "tempFeat1"
+            arcpy.Select_analysis(feature_label, temp_feat1, where_clause)
+
+            layer_temp = "layerTemp"
+            arcpy.MakeFeatureLayer_management(temp_feat, layer_temp)
+
+            # select those points that are on the selected bounding
+            # rectangle boundaries (N and S or E and W)
+            arcpy.SelectLayerByLocation_management(layer_temp, "INTERSECT", temp_feat1)
+            temp_points = "tempPoints"
+            arcpy.CopyFeatures_management(layer_temp, temp_points)
+
+            cursor1 = arcpy.SearchCursor(temp_points)
+            row1 = cursor1.next()
+            x_vals.append(row1.getValue("POINT_X"))
+            y_vals.append(row1.getValue("POINT_Y"))
+
+            # cleanup
+            arcpy.Delete_management(temp_feat)
+            arcpy.Delete_management(temp_feat1)
+            arcpy.Delete_management(temp_points)
+            arcpy.Delete_management(layer_temp)
+
+        return ids, angles, directions, x_vals, y_vals
+
+    in_feat_vertices = "inFeatVertices"
+
+    # convert each input feature to points;
+    arcpy.FeatureVerticesToPoints_management(in_feat_class, in_feat_vertices, "ALL")
+
+    layer1 = "layer1"
+    arcpy.MakeFeatureLayer_management(in_feat_vertices, layer1)
+
+    # select those points that are on the selected bounding rectangle
+    # boundaries (N and S or E and W)
+    arcpy.SelectLayerByLocation_management(layer1, "INTERSECT", mbr_line_class)
+    selected_points = "selectedPoints1"
+    arcpy.CopyFeatures_management(layer1, selected_points)
+    arcpy.AddXY_management(selected_points)
+
+    ids = []
+    angles = []
+    directions = []
+    x_vals = []
+    y_vals = []
+
+    direction_content = list(
+        zip(
+            ["MbrLineN", "MbrLineS", "MbrLineE", "MbrLineW"],
+            ["N", "S", "E", "W"],
+        )
+    )
+
+    for line, direction in direction_content:
+        where_clause = f"direction = '{direction}'"
+        arcpy.Select_analysis(mbr_line_class, line, where_clause)
+
+    for line, direction in direction_content:
+        data = arc_search_cursor(line, direction, selected_points)
+        ids.extend(data[0])
+        angles.extend(data[1])
+        directions.extend(data[2])
+        x_vals.extend(data[3])
+        y_vals.extend(data[4])
+
+    # create a new dataframe
+    df = pandas.DataFrame(
+        {
+            "featID": ids,
+            "angle": angles,
+            "direction": directions,
+            "POINT_X": x_vals,
+            "POINT_Y": y_vals,
+        }
+    )
+
+    # export the dataframe to a csv file
+    out_pth = temp_folder.joinpath("joinFeat_points1_selected.csv")
+    df.to_csv(out_pth, sep=",", header=True)
+
+    # create point featureclass from the csv file
+    arcpy.XYTableToPoint_management(
+        str(out_pth), str(out_point_feat), "POINT_X", "POINT_Y", "#", mbr_line_class
+    )
+
+
+# TODO; confirm that this function replaces both
+#       direction_points_old1 and direction_points_old
+# 4270
+def direction_points(
+    in_feat_class: str, mbr_line_class: str, temp_folder: Path, out_point_feat: Path
+):
+    """
+    Generate direction point features from the input features.
+    Two points are generated for each feature at its north and south sides
+    or its east and west sides.
+
+    :param in_feat_class:
+        Represents the polygons to be connected;
+        input Bathymetric High Features.
+
+    :param mbr_line_class:
+        A subset of lines from the the minimum bounding rectangles
+        of in_feat_class. For each feature that are two lines,
+        either N and S or E and W.
+
+    :param temp_folder:
+        A filepath to a location that will store the temporary files.
+
+    :param out_point_feat:
+        Output direction point features.
+
+    :notes:
+        The label `class` isn't referring to a Python class,
+        but a classification.
+    """
+    items: list[str] = []
+
+    in_feat_vertices = "inFeatVertices"
+    items.append(in_feat_vertices)
+
+    # convert each input feature to points
+    arcpy.FeatureVerticesToPoints_management(in_feat_class, in_feat_vertices, "ALL")
+
+    # for each polygon, the first vertice and the last vertice are identical,
+    # need to remove the duplicate
+    vertice_tab = "verticeTab"
+    items.append(vertice_tab)
+    stats_field = [["OBJECTID", "MIN"]]
+    case_field = "featID"
+    arcpy.Statistics_analysis(in_feat_vertices, vertice_tab, stats_field, case_field)
+
+    ids: list[int] = []
+    cursor = arcpy.SearchCursor(vertice_tab)
+    for row in cursor:
+        ids.append(row.getValue("MIN_OBJECTID"))
+
+    del cursor  # TODO; is this necessary? maybe arc leaves a dangling pointer?
+
+    in_feat_vertices1 = "inFeatVertices1"
+    items.append(in_feat_vertices1)
+
+    # select subset
+    text = ",".join([str(i) for i in ids])
+    text = f"({text})"
+    where_clause = f"OBJECTID NOT IN {text}"
+    arcpy.Select_analysis(in_feat_vertices, in_feat_vertices1, where_clause)
+
+    # select polygon points on the bounding rectangle boundaries
+    layer1 = "layer1"
+    items.append(layer1)
+    arcpy.MakeFeatureLayer_management(in_feat_vertices1, layer1)
+
+    # select those points that are on the selected bounding rectangle boundaries
+    # (N and S or E and W)
+    arcpy.SelectLayerByLocation_management(layer1, "INTERSECT", mbr_line_class)
+    selected_points = "selectedPoints1"
+    items.append(selected_points)
+    arcpy.AddXY_management(selected_points)
+
+    # separate into four boundary types
+    direction_content = list(
+        zip(
+            ["MbrLineN", "MbrLineS", "MbrLineE", "MbrLineW"],
+            ["N", "S", "E", "W"],
+        )
+    )
+
+    for line, direction in direction_content:
+        items.append(line)
+        where_clause = f"direction = '{direction}'"
+        arcpy.Select_analysis(mbr_line_class, line, where_clause)
+
+    # when the orientation is straight north (=0) or straight east (=90),
+    # multiple points can be on the boundaries
+    # in this case, need to select only one point (first point)
+    # for each boundary
+    selected_points_1 = "selectedPoints1_1"
+    items.append(selected_points_1)
+    where_clause = "rectangle_Orientation = 0"
+    arcpy.Select_analysis(selected_points, selected_points_1, where_clause)
+
+    tab1 = "tab1"
+    items.append(tab1)
+    stats_fields = [["OBJECTID", "MIN"]]
+    case_fields = ["featID", "POINT_Y"]
+    arcpy.Statistics_analysis(selected_points_1, tab1, stats_fields, case_fields)
+
+    ids = []
+    cursor = arcpy.SearchCursor(tab1)
+    for row in cursor:
+        ids.append(row.getValue("MIN_OBJECTID"))
+
+    del cursor  # TODO; is this necessary? maybe arc leaves a dangling pointer?
+
+    selected_points_1_1 = "selectedPoints1_1_1"
+    items.append(selected_points_1_1)
+
+    # select subset
+    text = ",".join([str(i) for i in ids])
+    text = f"({text})"
+    where_clause = f"OBJECTID IN {text}"
+    arcpy.Select_analysis(selected_points_1, selected_points_1_1, where_clause)
+
+    selected_points_2 = "selectedPoints1_2"
+    items.append(selected_points_2)
+    where_clause = "rectangle_Orientation = 90"
+    arcpy.Select_analysis(selected_points, selected_points_2, where_clause)
+
+    tab2 = "tab2"
+    items.append(tab2)
+    stats_fields = [["OBJECTID", "MIN"]]
+    case_fields = ["featID", "POINT_X"]
+    arcpy.Statistics_analysis(selected_points_2, tab2, stats_fields, case_fields)
+
+    ids = []
+    cursor = arcpy.SearchCursor(tab2)
+    for row in cursor:
+        ids.append(row.getValue("MIN_OBJECTID"))
+
+    del cursor
+
+    selected_points_2_1 = "selectedPoints1_2_1"
+    items.append(selected_points_2_1)
+
+    # select subset
+    text = ",".join([str(i) for i in ids])
+    text = f"({text})"
+    where_clause = f"OBJECTID IN {text}"
+    arcpy.Select_analysis(selected_points_2, selected_points_2_1, where_clause)
+
+    # select those points that are not from features orienting
+    # straight north and straight east
+    selected_points_4 = "selectedPoints1_4"
+    items.append(selected_points_4)
+    where_clause = "(rectangle_Orientation <> 0) And (rectangle_Orientation <> 90)"
+    arcpy.Select_analysis(selected_points, selected_points_4, where_clause)
+
+    # merge these three subsets to form a new set of points
+    selected_points1 = "selectedPoints2"
+    items.append(selected_points1)
+    inputs = [selected_points_1_1, selected_points_2_1, selected_points_4]
+    arcpy.Merge_management(inputs, selected_points1)
+
+    # generate direction lists
+    ids = []
+    angles: list[float] = []
+    directions: list[str] = []
+    x_vals: list[float] = []
+    y_vals: list[float] = []
+
+    # TODO; implement
+    # generate_direction_point_lists()
+    for line, direction in direction_content:
+        data = generate_direction_points(selected_points1, line, direction)
+
+        ids.extend(data[0])
+        angles.extend(data[1])
+        directions.extend(data[2])
+        x_vals.extend(data[3])
+        y_vals.extend(data[4])
+
+    # create a new dataframe
+    df = pandas.DataFrame(
+        {
+            "featID": ids,
+            "angle": angles,
+            "direction": directions,
+            "POINT_X": x_vals,
+            "POINT_Y": y_vals,
+        }
+    )
+
+    # export the dataframe to a csv file
+    out_pth = temp_folder.joinpath("points1_selected.csv")
+    df.to_csv(out_pth, sep=",", header=True)
+
+    # create point featureclass from the csv file
+    arcpy.XYTableToPoint_management(
+        str(out_pth), str(out_point_feat), "POINT_X", "POINT_Y", "#", mbr_line_class
+    )
+
+    # delete temporary data
+    delete_items(items)
+
+
+# 4443
+def generate_direction_points(
+    point_feat: str,
+    mbr_line_feat: str,
+    direction: str,
+) -> tuple[list[int], list[float], list[str], list[float], list[float]]:
+    """
+    Generates five lists from the direction points input featureclass.
+
+    :param point_feat:
+        Input direction points feature class.
+
+    :param mbr_line_feat:
+        Input bounding rectangle boundaries feature class.
+
+    :param direction:
+        Indicates the direction.
+
+    :notes:
+        The original function appended in-place and returned the variables,
+        making it a little confusing to follow exactly what's going on.
+        Instead, this version will return new lists, and make the caller
+        responsible for appending.
+    """
+    items: list[str] = []
+    layer_temp = "layerTemp"
+    items.append(layer_temp)
+    arcpy.MakeFeatureLayer_management(point_feat, layer_temp)
+
+    # select those points that are on the selected bounding rectangle boundaries
+    # (N and S or E and W)
+    arcpy.SelectLayerByLocation_management(layer_temp, "INTERSECT", mbr_line_feat)
+    selected_points_temp = "selectedPointsTemp"
+    # items.append(selected_points_temp)  # TODO; original code had layerTemp, mistake??
+    arcpy.CopyFeatures_management(layer_temp, selected_points_temp)
+
+    # build two featID lists: one contains features with only one
+    # candidate point; the other contains mutliple candidate points
+    sum_tab = "sumTab"
+    items.append(sum_tab)
+    stats_fields = [["featID", "COUNT"]]
+    case_field = "featID"
+    arcpy.Statistics_analysis(selected_points_temp, sum_tab, stats_fields, case_field)
+
+    feat_ids_1: list[int] = []
+    feat_ids_2: list[int] = []
+
+    cursor = arcpy.SearchCursor(sum_tab)
+    for row in cursor:
+        count = int(row.getValue("COUNT_featID"))
+        feat_id = row.getValue("featID")
+
+        if count > 1:
+            feat_ids_2.append(feat_id)
+        else:
+            feat_ids_1.append(feat_id)
+
+    del cursor
+
+    if feat_ids_1:
+        # select subset
+        text = ",".join([str(i) for i in feat_ids_1])
+        text = f"({text})"
+        where_clause = f"featID IN {text}"
+        selected_points_temp1 = "selectedPoints1Temp1"
+        items.append(selected_points_temp1)
+        arcpy.Select_analysis(selected_points_temp, selected_points_temp1, where_clause)
+
+    out_ids: list[int] = []
+    out_angles: list[float] = []
+    out_directions: list[str] = []
+    out_x_vals: list[float] = []
+    out_y_vals: list[float] = []
+
+    # deal with the first subset
+    in_feat_count = int(arcpy.GetCount_management(selected_points_temp1).getOutput(0))
+    if in_feat_count:
+        cursor = arcpy.SearchCursor(selected_points_temp1)
+
+        for row in cursor:
+            feat_id = row.getValue("featID")
+            arcpy.AddMessage(f"featID: {feat_id}")
+            out_ids.append(feat_id)
+            out_angles.append(row.getValue("rectangle_Orientation"))
+            out_directions.append(direction)
+            out_x_vals.append(row.getValue("POINT_X"))
+            out_y_vals.append(row.getValue("POINT_Y"))
+
+        del cursor
+
+    # deal with the second subset
+    if feat_ids_2:
+        for idv in feat_ids_2:
+            arcpy.AddMessage(f"idV: {idv}")
+            temp_feat = "tempFeat"
+            where_clause = f"featID = {idv}"
+            arcpy.Select_analysis(point_feat, temp_feat, where_clause)
+
+            temp_feat1 = "tempFeat1"
+            arcpy.Select_analysis(mbr_line_feat, temp_feat1, where_clause)
+
+            layer_temp1 = "layerTemp1"
+            arcpy.MakeFeatureLayer_management(temp_feat, layer_temp1)
+
+            # select those points that are on the selected bounding
+            # rectangle boundaries (N and S or E and W)
+            arcpy.SelectLayerByLocation_management(layer_temp1, "INTERSECT", temp_feat1)
+            temp_points = "tempPoints"
+            arcpy.CopyFeatures_management(layer_temp1, temp_points)
+
+            in_feat_count = int(arcpy.GetCount_management(temp_points).getOutput(0))
+            if in_feat_count:
+                out_ids.append(idv)
+
+                cursor1 = arcpy.SearchCursor(temp_points)
+                row1 = cursor1.next()  # get the first candidate point
+                out_x_vals.append(row1.getValue("POINT_X"))
+                out_y_vals.append(row1.getValue("POINT_Y"))
+
+                out_angles.append(row1.getValue("rectangle_Orientation"))
+                out_directions.append(direction)
+
+                del cursor1, row1
+
+            arcpy.Delete_management(temp_feat)
+            arcpy.Delete_management(temp_feat1)
+            arcpy.Delete_management(temp_points)
+            # arcpy.Delete_management(layer_temp1)  # TODO; orig code had layer_temp
+
+    delete_items(items)
+
+    return out_ids, out_angles, out_directions, out_x_vals, out_y_vals
+
+
+# 4561
+def select_links(
+    in_links_feat: str,
+    points_feat_from: str,
+    points_feat_to: str,
+    out_links_feat: str,
+) -> None:
+    """
+    Selects as subset of input links.
+
+    :param in_links_feat:
+        Input links feature class.
+
+    :param points_feat_from:
+        Feature class represents the from point of a link.
+
+    :param points_feat_to:
+        Feature class represents the to point of a link.
+
+    :param out_links_feat:
+        Output the subset of links after the selection process.
+    """
+    # add and calculate fields
+    fields = ["featID1", "fromLocation", "fromDirection"]
+    values = ["featID", "location", "direction"]
+    in_id = "ORIG_FID"
+    join_id = "OBJECTID"
+
+    for item in zip(fields, values):
+        expression = f"!{points_feat_from}.{item[1]}!"
+        add_long_field(
+            in_links_feat, points_feat_from, item[0], in_id, join_id, expression
+        )
+
+    fields = ["featID2", "toLocation", "toDirection"]
+    in_id = "DEST_FID"
+    join_id = "OBJECTID"
+
+    for item in zip(fields, values):
+        expression = f"!{points_feat_to}.{item[1]}!"
+        add_long_field(
+            in_links_feat, points_feat_to, item[0], in_id, join_id, expression
+        )
+
+    # add more fields
+    field_name1 = "idDiff"
+    field_type = "LONG"
+    field_precision = 15
+    arcpy.AddField_management(in_links_feat, field_name1, field_type, field_precision)
+
+    expression = "!featID1! - !featID2!"
+    arcpy.CalculateField_management(in_links_feat, field_name1, expression)
+    links_feat1_temp = "links1Temp"
+    where_clause = "idDiff <> 0"
+    arcpy.Select_analysis(in_links_feat, links_feat1_temp, where_clause)
+
+    # generate summary statistics
+    tab1 = "tab1"
+    stats_fields = [["LINK_DIST", "MIN"]]
+    case_field = "featID1"
+    arcpy.Statistics_analysis(links_feat1_temp, tab1, stats_fields, case_field)
+
+    field_name2 = "distDiff"
+    in_id = "featID1"
+    join_id = "featID1"
+    expression = f"!{links_feat1_temp}.LINK_DIST! - !{tab1}.MIN_LINK_DIST!"
+    add_double_field(links_feat1_temp, tab1, field_name2, in_id, join_id, expression)
+
+    # select a subset of links based on the following condition
+    links_feat2_temp = "links2Temp"
+    where_clause = "distDiff = 0"
+    arcpy.Select_analysis(links_feat1_temp, links_feat2_temp, where_clause)
+
+    # further selection based on the following condition
+    where_clause = "(fromLocation = 'F') And (toLocation = 'H')"
+    arcpy.Select_analysis(links_feat2_temp, out_links_feat, where_clause)
+
+    arcpy.Delete_management(links_feat1_temp)
+    arcpy.Delete_management(links_feat2_temp)
+    arcpy.Delete_management(tab1)
