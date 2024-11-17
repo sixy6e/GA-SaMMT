@@ -5,6 +5,7 @@ import pandas
 from pandas.core.common import flatten
 
 import arcpy
+from arcpy import sa
 
 PY_VERSION: str = "PYTHON_9.3"  # is this really required by arc???
 
@@ -1538,11 +1539,11 @@ def get_index(
 
 # 3612
 def do_lists(
-    feat_id1_list: list[Any],
-    feat_id2_list: list[Any],
-    in_id_list_list: list[tuple[list[Any], list[Any]]],
-    dist_list: list[Any],
-    angle_list: list[Any],
+    feat_id1_list: list[int],
+    feat_id2_list: list[int],
+    in_id_list_list: list[list[int]],
+    dist_list: list[float],
+    angle_list: list[float],
     dist_threshold: float,
     angle_threshold: float,
     dist_weight: float,
@@ -1558,7 +1559,7 @@ def do_lists(
         Feature IDs of the `to` points.
 
     :param in_id_list_list:
-        List of tuples containing (feat_id1, feat_id2).
+        List of lists containing [feat_id1, feat_id2].
 
     :param dist_list:
         Initial distance list.
@@ -1586,16 +1587,16 @@ def do_lists(
     #     Also, this func could contain a private func that performs the loops
     #     and returns the result, or turn this func itself to iterate once,
     #     and the caller be responsible for iterating
-    out_id_list_list1: list[Any] = []
-    out_id_list_list2: list[Any] = []
-    feat_id1_list1: list[Any] = []
-    feat_id1_list2: list[Any] = []
-    feat_id2_list1: list[Any] = []
-    feat_id2_list2: list[Any] = []
-    dist_list1: list[Any] = []
-    dist_list2: list[Any] = []
-    angle_list1: list[Any] = []
-    angle_list2: list[Any] = []
+    out_id_list_list1: list[int] = []
+    out_id_list_list2: list[int] = []
+    feat_id1_list1: list[int] = []
+    feat_id1_list2: list[int] = []
+    feat_id2_list1: list[int] = []
+    feat_id2_list2: list[int] = []
+    dist_list1: list[float] = []
+    dist_list2: list[float] = []
+    angle_list1: list[float] = []
+    angle_list2: list[float] = []
 
     # first round, doing features sharing featID1 (featID of the from point)
     # each element in outIDListList1 contains ids of connected features
@@ -1688,7 +1689,7 @@ def do_lists(
 def do_lists_v2(
     feat_id1_list: list[Any],
     feat_id2_list: list[Any],
-    in_id_list_list: list[tuple[list[Any], list[Any]]],
+    in_id_list_list: list[list[int]],
     dist_list: list[Any],
     angle_list: list[Any],
     dist_threshold: float,
@@ -1702,16 +1703,16 @@ def do_lists_v2(
 
     def update(
         feat_ids: list[Any],
-        in_ids: list[tuple[list[Any], list[Any]]],
+        in_ids: list[list[int]],
         distances: list[Any],
         angles: list[Any],
         dist_threshold: float,
         angle_threshold: float,
         dist_weight: float,
         angle_weight: float,
-    ) -> list[tuple[list[Any], list[Any]]]:
-        """Helper func private to do_lists."""
-        out_ids: list[tuple[list[Any], list[Any]]] = []
+    ) -> list[list[int]]:
+        """Helper func private to do_lists_v2."""
+        out_ids: list[list[int]] = []
 
         # first round, doing features sharing featID1 (featID of the from point)
         # each element in outIDListList1 contains ids of connected features
@@ -1747,10 +1748,10 @@ def do_lists_v2(
         return out_ids
 
     # temps; first pass
-    feat_ids1_list1: list[Any] = []
-    feat_ids2_list1: list[Any] = []
-    dist_list1: list[Any] = []
-    angle_list1: list[Any] = []
+    feat_ids1_list1: list[int] = []
+    feat_ids2_list1: list[int] = []
+    dist_list1: list[float] = []
+    angle_list1: list[float] = []
 
     # first round, doing features sharing featID1 (featID of the from point)
     # each element in outIDListList1 contains ids of connected features
@@ -1775,10 +1776,10 @@ def do_lists_v2(
         angle_list1.append(angle_list[i])
 
     # return vars; second pass
-    feat_ids1_list2: list[Any] = []
-    feat_ids2_list2: list[Any] = []
-    dist_list2: list[Any] = []
-    angle_list2: list[Any] = []
+    feat_ids1_list2: list[int] = []
+    feat_ids2_list2: list[int] = []
+    dist_list2: list[float] = []
+    angle_list2: list[float] = []
 
     # second round, doing features sharing featID2
     # the inputs are the updated lists from the first round
@@ -1813,16 +1814,16 @@ def do_lists_v2(
 
 
 def do_lists1(
-    feat_id1_list: list[Any],
-    feat_id2_list: list[Any],
-    in_id_list_list: list[tuple[list[Any], list[Any]]],
-    dist_list: list[Any],
-    angle_list: list[Any],
+    feat_id1_list: list[int],
+    feat_id2_list: list[int],
+    in_id_list_list: list[list[int]],
+    dist_list: list[float],
+    angle_list: list[float],
     dist_threshold: float,
     angle_threshold: float,
     dist_weight: float,
     angle_weight: float,
-) -> list[tuple[list[Any], list[Any]]]:
+) -> list[list[int]]:
     """
     Further updates ids list when multiple elements connected through sharing
     `from` and `to` points.
@@ -1858,7 +1859,7 @@ def do_lists1(
         Weight assigned to angle; used to calculate a combination metric
         from distance and angle.
     """
-    out_list_list: list[tuple[list[Any], list[Any]]] = []
+    out_list_list: list[list[int]] = []
 
     # np arrays
     # TODO; look to work directly with np arrays rather than back and forth conversion
@@ -1868,7 +1869,7 @@ def do_lists1(
     distances = numpy.asarray(dist_list)
 
     for i, ids in enumerate(in_id_list_list):
-        temp_list: list[tuple[list[Any], list[Any]]] = []
+        temp_list: list[list[int]] = []
         feat_id1 = feat_id1_list[i]
         feat_id2 = feat_id2_list[i]
 
@@ -2084,8 +2085,8 @@ def direction_points_old(
     ids = []
     angles = []
     directions = []
-    x_vals = []
-    y_vals = []
+    x_coords = []
+    y_coords = []
 
     # loop through each feature
     for fid in point_df.featID.unique():
@@ -2106,29 +2107,29 @@ def direction_points_old(
             idx = temp_df.POINT_X == temp_df.POINT_X.max()
             subs = temp_df.loc[idx]
             directions.append(subs["direction"].values[0])
-            x_vals.append(subs["POINT_X"].values[0])
-            y_vals.append(subs["POINT_Y"].values[0])
+            x_coords.append(subs["POINT_X"].values[0])
+            y_coords.append(subs["POINT_Y"].values[0])
 
             # POINT_X.min() indicates W
             idx = temp_df.POINT_X == temp_df.POINT_X.min()
             subs = temp_df.loc[idx]
             directions.append(subs["direction"].values[0])
-            x_vals.append(subs["POINT_X"].values[0])
-            y_vals.append(subs["POINT_Y"].values[0])
+            x_coords.append(subs["POINT_X"].values[0])
+            y_coords.append(subs["POINT_Y"].values[0])
         else:
             # POINT_Y.max() indicates N
             idx = temp_df.POINT_Y == temp_df.POINT_Y.max()
             subs = temp_df.loc[idx]
             directions.append(subs["direction"].values[0])
-            x_vals.append(subs["POINT_X"].values[0])
-            y_vals.append(subs["POINT_Y"].values[0])
+            x_coords.append(subs["POINT_X"].values[0])
+            y_coords.append(subs["POINT_Y"].values[0])
 
             # POINT_Y.min() indicates S
             idx = temp_df.POINT_Y == temp_df.POINT_Y.min()
             subs = temp_df.loc[idx]
             directions.append(subs["direction"].values[0])
-            x_vals.append(subs["POINT_X"].values[0])
-            y_vals.append(subs["POINT_Y"].values[0])
+            x_coords.append(subs["POINT_X"].values[0])
+            y_coords.append(subs["POINT_Y"].values[0])
 
     # create a new dataframe
     df = pandas.DataFrame(
@@ -2136,8 +2137,8 @@ def direction_points_old(
             "featID": ids,
             "angle": angles,
             "direction": directions,
-            "POINT_X": x_vals,
-            "POINT_Y": y_vals,
+            "POINT_X": x_coords,
+            "POINT_Y": y_coords,
         }
     )
 
@@ -2198,8 +2199,8 @@ def direction_points_old1(
         ids: list[int] = []
         angles: list[float] = []
         directions: list[str] = []
-        x_vals: list[float] = []
-        y_vals: list[float] = []
+        x_coords: list[float] = []
+        y_coords: list[float] = []
 
         cursor = arcpy.SearchCursor(feature_label)
         arcpy.AddMessage(f"Searching: {feature_label}")
@@ -2230,8 +2231,8 @@ def direction_points_old1(
 
             cursor1 = arcpy.SearchCursor(temp_points)
             row1 = cursor1.next()
-            x_vals.append(row1.getValue("POINT_X"))
-            y_vals.append(row1.getValue("POINT_Y"))
+            x_coords.append(row1.getValue("POINT_X"))
+            y_coords.append(row1.getValue("POINT_Y"))
 
             # cleanup
             arcpy.Delete_management(temp_feat)
@@ -2239,7 +2240,7 @@ def direction_points_old1(
             arcpy.Delete_management(temp_points)
             arcpy.Delete_management(layer_temp)
 
-        return ids, angles, directions, x_vals, y_vals
+        return ids, angles, directions, x_coords, y_coords
 
     in_feat_vertices = "inFeatVertices"
 
@@ -2259,8 +2260,8 @@ def direction_points_old1(
     ids = []
     angles = []
     directions = []
-    x_vals = []
-    y_vals = []
+    x_coords = []
+    y_coords = []
 
     direction_content = list(
         zip(
@@ -2278,8 +2279,8 @@ def direction_points_old1(
         ids.extend(data[0])
         angles.extend(data[1])
         directions.extend(data[2])
-        x_vals.extend(data[3])
-        y_vals.extend(data[4])
+        x_coords.extend(data[3])
+        y_coords.extend(data[4])
 
     # create a new dataframe
     df = pandas.DataFrame(
@@ -2287,8 +2288,8 @@ def direction_points_old1(
             "featID": ids,
             "angle": angles,
             "direction": directions,
-            "POINT_X": x_vals,
-            "POINT_Y": y_vals,
+            "POINT_X": x_coords,
+            "POINT_Y": y_coords,
         }
     )
 
@@ -2464,8 +2465,8 @@ def direction_points(
     ids = []
     angles: list[float] = []
     directions: list[str] = []
-    x_vals: list[float] = []
-    y_vals: list[float] = []
+    x_coords: list[float] = []
+    y_coords: list[float] = []
 
     # TODO; implement
     # generate_direction_point_lists()
@@ -2475,8 +2476,8 @@ def direction_points(
         ids.extend(data[0])
         angles.extend(data[1])
         directions.extend(data[2])
-        x_vals.extend(data[3])
-        y_vals.extend(data[4])
+        x_coords.extend(data[3])
+        y_coords.extend(data[4])
 
     # create a new dataframe
     df = pandas.DataFrame(
@@ -2484,8 +2485,8 @@ def direction_points(
             "featID": ids,
             "angle": angles,
             "direction": directions,
-            "POINT_X": x_vals,
-            "POINT_Y": y_vals,
+            "POINT_X": x_coords,
+            "POINT_Y": y_coords,
         }
     )
 
@@ -2573,8 +2574,8 @@ def generate_direction_points(
     out_ids: list[int] = []
     out_angles: list[float] = []
     out_directions: list[str] = []
-    out_x_vals: list[float] = []
-    out_y_vals: list[float] = []
+    out_x_coords: list[float] = []
+    out_y_coords: list[float] = []
 
     # deal with the first subset
     in_feat_count = int(arcpy.GetCount_management(selected_points_temp1).getOutput(0))
@@ -2587,8 +2588,8 @@ def generate_direction_points(
             out_ids.append(feat_id)
             out_angles.append(row.getValue("rectangle_Orientation"))
             out_directions.append(direction)
-            out_x_vals.append(row.getValue("POINT_X"))
-            out_y_vals.append(row.getValue("POINT_Y"))
+            out_x_coords.append(row.getValue("POINT_X"))
+            out_y_coords.append(row.getValue("POINT_Y"))
 
         del cursor
 
@@ -2618,8 +2619,8 @@ def generate_direction_points(
 
                 cursor1 = arcpy.SearchCursor(temp_points)
                 row1 = cursor1.next()  # get the first candidate point
-                out_x_vals.append(row1.getValue("POINT_X"))
-                out_y_vals.append(row1.getValue("POINT_Y"))
+                out_x_coords.append(row1.getValue("POINT_X"))
+                out_y_coords.append(row1.getValue("POINT_Y"))
 
                 out_angles.append(row1.getValue("rectangle_Orientation"))
                 out_directions.append(direction)
@@ -2633,7 +2634,7 @@ def generate_direction_points(
 
     delete_items(items)
 
-    return out_ids, out_angles, out_directions, out_x_vals, out_y_vals
+    return out_ids, out_angles, out_directions, out_x_coords, out_y_coords
 
 
 # 4561
@@ -2713,6 +2714,107 @@ def select_links(
     where_clause = "(fromLocation = 'F') And (toLocation = 'H')"
     arcpy.Select_analysis(links_feat2_temp, out_links_feat, where_clause)
 
-    arcpy.Delete_management(links_feat1_temp)
-    arcpy.Delete_management(links_feat2_temp)
-    arcpy.Delete_management(tab1)
+    delete_items([links_feat1_temp, links_feat2_temp, tab1])
+
+
+# 4630
+def to_fh_points(
+    in_points_feat: str,
+    mosaic_bathy: str,
+    temp_folder: Path,
+    out_point_feat: Path,
+):
+    """
+    Identifies the input poions as either head (H) points or foot (F) points.
+
+    :param in_points_feat:
+        Input feature class represents direction points.
+
+    :param mosaic_bathy:
+        Input bathymetry data.
+
+    :param temp_folder:
+        A filepath to a location that will store the temporary files.
+
+    :param out_point_feat:
+        Output point feature class with a new field indicating the
+        H or F location.
+    """
+    point_feat_temp = "pointFeatTemp"
+
+    # to identify a point as either H or F point, we need to obtain the
+    # bathymetry value for this point
+    sa.ExtractValuesToPoints(in_points_feat, mosaic_bathy, point_feat_temp)
+    arcpy.AddMessage("extract depth values done")
+
+    # delete schema.ini which may contains incorrect data types
+    schema_pth = temp_folder.joinpath("schema.ini")
+    if schema_pth.exists():
+        schema_pth.unlink()
+
+    # export the attributes to a csv file
+    csv_pth = temp_folder.joinpath("pointFeat1.csv")
+    arcpy.CopyRows_management(point_feat_temp, csv_pth)
+
+    # read the csv file as a pandas data frame
+    point_df = pandas.read_csv(csv_pth, sep=",", header=0, index_col="OBJECTID")
+
+    ids: list[int] = []
+    angles: list[float] = []
+    directions: list[str] = []
+    locations: list[str] = []
+    x_coords: list[float] = []
+    y_coords: list[float] = []
+
+    # loop through each feature
+    for fid in point_df.featID.unique():
+        # intend to select two points (e.g., E and W, W and E, N and S, S and N)
+        # for each input feature; each point requires one row
+        ids.append(fid)  # for first point (one element in the list)
+        ids.append(fid)  # for second point (next element in the list)
+
+        # temp_df contains candidate points for a selected polygon feature
+        temp_df = point_df.loc[point_df.featID == fid]
+        idx = temp_df.POINT_Y == temp_df.POINT_Y.max()
+        angle = temp_df.loc[idx]["angle"].values[0]
+        angles.append(angle)
+        angles.append(angle)
+
+        # RASTERVALU.max() indicates head
+        idx = temp_df.RASTERVALU == temp_df.RASTERVALU.max()
+        subs = temp_df[idx]
+        x_coords.append(subs["POINT_X"].values[0])
+        y_coords.append(subs["POINT_Y"].values[0])
+        directions.append(subs["direction"].values[0])
+        locations.append("H")
+
+        # RASTERVALU.min() indicates foot
+        idx = temp_df.RASTERVALU == temp_df.RASTERVALU.min()
+        subs = temp_df[idx]
+        x_coords.append(subs["POINT_X"].values[0])
+        y_coords.append(subs["POINT_Y"].values[0])
+        directions.append(subs["direction"].values[0])
+        locations.append("F")
+
+    # create a new dataframe
+    df = pandas.DataFrame(
+        {
+            "featID": ids,
+            "angle": angles,
+            "direction": directions,
+            "location": locations,
+            "POINT_X": x_coords,
+            "POINT_Y": y_coords,
+        }
+    )
+
+    # export the dataframe to a csv file
+    out_pth = temp_folder.joinpath("pointFeat2.csv")
+    df.to_csv(out_pth, sep=",", header=True)
+
+    # create point featureclass from the csv file
+    arcpy.XYTableToPoint_management(
+        str(out_pth), str(out_point_feat), "POINT_X", "POINT_Y", "#", in_points_feat
+    )
+
+    delete_items([point_feat_temp, str(csv_pth), str(out_pth)])
