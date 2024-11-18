@@ -55,6 +55,30 @@ def area_unit_converter(unit_name: str) -> float:
     return result
 
 
+# TODO; remove once entire transcription is complete.
+#       This function isn't needed.
+def convert_backslash_forwardslash(text: str) -> str:
+    """
+    Convert a string, typically a Windows pathname containing backslashes
+    to forward slashes.
+
+    :param text:
+       Input string containing backslashes that will be converted to
+       forward slashes.
+    """
+    text = rf"{text}"
+    if text.find("\t"):
+        text = text.replace("\t", "\\t")
+    elif text.find("\n"):
+        text = text.replace("\n", "\\n")
+    elif text.find("\r"):
+        text = text.replace("\r", "\\r")
+
+    text = text.replace("\\", "/")
+
+    return text
+
+
 def unique(data: list[Any]) -> list[Any]:
     """
     Given a list of elements, return a unique listing.
